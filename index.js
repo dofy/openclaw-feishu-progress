@@ -252,7 +252,8 @@ export default definePluginEntry({
       try {
         if (!isFeishu(ctx)) return;
         const messageId = ctx.messageId ?? event?.messageId;
-        const text = typeof event?.content === "string" ? event.content.trim() : "";
+        // Group messages may keep the leading "@MiMi" mention in content.
+        const text = typeof event?.content === "string" ? event.content.trim().replace(/^(?:@\S+\s+)+/, "") : "";
         const activeRun = runs.get(activeBySession.get(ctx.sessionKey));
         if (text.startsWith("/")) {
           // Commands (typed or from our stop button) never start a progress card.
