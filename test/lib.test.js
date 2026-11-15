@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   answerTitle,
+  cleanModelTitle,
+  titlePrompt,
   buildStopEnvelope,
   chatTypeFromSessionKey,
   formatDuration,
@@ -198,4 +200,20 @@ test("answerTitle takes the answer's first sentence as plain text", () => {
   assert.equal(answerTitle("Done. All 3 repos checked.", r), "Done. All 3 repos checked");
   assert.equal(answerTitle("```\nonly code\n```", r), undefined);
   assert.equal(answerTitle("三个 repo 跑完了:\n\n**namo**", r), "三个 repo 跑完了");
+});
+
+test("cleanModelTitle keeps one clean line", () => {
+  const r = makeRedactor([]);
+  assert.equal(cleanModelTitle("「两个 repo 都在 main 分支」。\n多余", r), "两个 repo 都在 main 分支");
+  assert.equal(cleanModelTitle("标题：✅ 余额还剩 12.4 美元", r), "余额还剩 12.4 美元");
+  assert.equal(cleanModelTitle("   \n  ", r), undefined);
+  assert.equal(cleanModelTitle(undefined, r), undefined);
+});
+
+test("titlePrompt bounds and redacts both parts", () => {
+  const r = makeRedactor(["topsecret123"]);
+  const p = titlePrompt("查 topsecret123", "答".repeat(2000), r);
+  assert.match(p, /^用户请求：\n查 \[REDACTED\]\n\n助手回答：\n/);
+  assert.ok(p.endsWith("…"));
+  assert.ok(Array.from(p).length < 1600);
 });

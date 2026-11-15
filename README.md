@@ -5,7 +5,7 @@ An OpenClaw plugin that gives Feishu turns a Namo-style progress card:
 - **While a turn runs**: one card replies to the user's message. Its header shows the elapsed time and tool-call count, and the body lists the most recent tool steps (`✅ 运行命令 · 0.3s`, `❌ 抓取网页 · 失败`). The card updates at most every 5 s and refreshes the elapsed time every 15 s.
 - **Stop button**: "停止任务" asks for confirmation, then runs `/stop` in the conversation. Only the person who sent the message can use it.
 - **When the turn ends**: the card collapses to one grey line, for example `✅ 处理结束 · ⏱️ 22s · 🔧 3 次`. Other outcomes read `⏹️ 已停止`, `❌ 执行失败` or `⚠️ 已中断（服务重启）`. While running, the header shows `⏳ 处理中：…` (`🛑 正在停止：…` after a stop) with `⏱️ 已用时 · 🔧 工具调用` underneath. The answer itself arrives as a separate message.
-- **Task title**: the progress header reads `处理中：<request>`. The answer is sent as a card titled with the answer's own first sentence as plain text, for example `✅ 两个都在 main`. A stopped or failed run is titled with the request instead (`⏹️ 已停止：…`, `❌ 失败：…`), because its reply is a generic notice., with a grey `🍯 MiMi · 用时 · 工具调用` footer. That title is what the Feishu chat list previews. The progress title is the first line of the user's message, and both titles are redacted and clipped to 30 characters. The plugin takes over the answer through the `reply_payload_sending` hook, as a message `presentation`. Answers with media, markdown tables or more than 8000 characters keep the stock rendering.
+- **Task title**: the progress header reads `处理中：<request>`. The answer is sent as a card titled with a one-line result summary written by a small model (default `openrouter/kaon/claude-haiku-4-5-20251001`, through `api.runtime.llm.complete`), for example `✅ 两个仓库都在main分支，无新提交`. The model sees the redacted request (300 characters at most) and answer (1500 at most). If it fails or takes longer than 6 s, the title falls back to the answer's first sentence. A stopped or failed run is titled with the request instead (`⏹️ 已停止：…`, `❌ 失败：…`), because its reply is a generic notice., with a grey `🍯 MiMi · 用时 · 工具调用` footer. That title is what the Feishu chat list previews. The progress title is the first line of the user's message, and both titles are redacted and clipped to 30 characters. The plugin takes over the answer through the `reply_payload_sending` hook, as a message `presentation`. Answers with media, markdown tables or more than 8000 characters keep the stock rendering.
 - **Agent plan**: when the agent calls OpenClaw's built-in `progress_card` tool, the card shows its checklist (`📋 计划 2/5`, ☑️/▶️/▫️), the progress bar label and the note above the tool steps. Routing helpers such as `dispatch_action`, `tool_search` and `progress_card` itself do not add step lines.
 - **Quick replies get no card**: a card appears only on the first tool call or after 10 s.
 
@@ -39,9 +39,9 @@ The Feishu app must have **card callbacks** (`card.action.trigger`) enabled, usi
 }
 ```
 
-`allowConversationAccess` is required for `agent_end`. After code edits, run `openclaw plugins reload feishu-progress`. No gateway restart is needed.
+`allowConversationAccess` is required for `agent_end`. The title model also needs `plugins.entries.feishu-progress.llm: { allowModelOverride: true, allowedModels: ["<titleModel>"] }`. Set `config.titleModel: "off"` to skip it. After code edits, run `openclaw plugins reload feishu-progress`. No gateway restart is needed.
 
-Optional `plugins.entries.feishu-progress.config` keys are `updateIntervalMs` (5000), `showAfterMs` (10000), `maxSteps` (8) and `stopButtonTtlMs` (6 h).
+Optional `plugins.entries.feishu-progress.config` keys are `updateIntervalMs` (5000), `showAfterMs` (10000), `maxSteps` (8), `stopButtonTtlMs` (6 h), `titleModel` (haiku) and `titleTimeoutMs` (6000).
 
 ## Test
 

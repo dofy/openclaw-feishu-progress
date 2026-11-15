@@ -332,6 +332,36 @@ export function answerTitle(text, redact) {
   return undefined;
 }
 
+export const TITLE_SYSTEM_PROMPT = [
+  "你为飞书聊天列表写一条消息标题。",
+  "根据用户的请求和助手的回答，用一句话概括执行结果：发生了什么、结论是什么，而不是复述请求。",
+  "使用回答所用的语言；不超过 20 个汉字（或 40 个英文字符）；不要引号、emoji、句末标点或前缀。",
+  "只输出标题本身。",
+].join("\n");
+
+/** User message for the title model: request and answer, redacted and bounded. */
+export function titlePrompt(request, answer, redact) {
+  const bound = (t, n) => {
+    const chars = Array.from(redact(String(t ?? "")).trim());
+    return chars.length > n ? `${chars.slice(0, n).join("")}…` : chars.join("");
+  };
+  return `用户请求：\n${bound(request, 300)}\n\n助手回答：\n${bound(answer, 1500)}`;
+}
+
+/** First line of the model output, without quotes, emoji prefix or trailing punctuation. */
+export function cleanModelTitle(text, redact) {
+  if (typeof text !== "string") return undefined;
+  const line = text.split("\n").map((l) => l.trim()).find(Boolean);
+  if (!line) return undefined;
+  const cleaned = line
+    .replace(/^(?:标题|title)\s*[:：]\s*/i, "")
+    .replace(/^[\p{Extended_Pictographic}\uFE0F\s]+/u, "")
+    .replace(/[。.！!？?；;，,、：:"'“”‘’「」『』《》\s]+$/u, "")
+    .replace(/^["'“”‘’「」『』《》]+/u, "")
+    .trim();
+  return cleaned ? clip(redact(cleaned), TITLE_MAX) : undefined;
+}
+
 /** Card markdown tables need the stock plugin's table handling; long text needs its chunking. */
 export function canRenderAnswerCard(text) {
   if (typeof text !== "string" || !text.trim() || text.length > 8000) return false;

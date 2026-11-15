@@ -5,7 +5,10 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import {
   buildStopEnvelope,
   META_TOOLS,
+  TITLE_SYSTEM_PROMPT,
   answerTitle,
+  cleanModelTitle,
+  titlePrompt,
   canRenderAnswerCard,
   chatTypeFromSessionKey,
   makeRedactor,
@@ -40,6 +43,9 @@ export default definePluginEntry({
       // A card appears on the first tool call, or after this long without one.
       // Plain chat replies (Opus takes ~4s for "好") therefore get no card at all.
       showAfterMs: cfg.showAfterMs ?? 10_000,
+      // Model that writes the one-line result title; "off" uses the answer's first sentence.
+      titleModel: cfg.titleModel ?? "openrouter/kaon/claude-haiku-4-5-20251001",
+      titleTimeoutMs: cfg.titleTimeoutMs ?? 6000,
     };
 
     /** sessionKey -> latest inbound Feishu message waiting for its run. */
@@ -191,6 +197,7 @@ export default definePluginEntry({
         sessionKey,
         sourceMessageId: p.messageId,
         title: p.title,
+        requestText: p.text,
         chatType,
         startedAt: Date.now(),
         steps: [],
@@ -256,7 +263,7 @@ export default definePluginEntry({
           return;
         }
         if (!messageId || String(messageId).startsWith("card-action-")) return;
-        pending.set(ctx.sessionKey, { messageId, senderId: ctx.senderId ?? event?.senderId, title: requestTitle(text, redactor()), at: Date.now() });
+        pending.set(ctx.sessionKey, { messageId, senderId: ctx.senderId ?? event?.senderId, title: requestTitle(text, redactor()), text, at: Date.now() });
       } catch (e) { log.warn?.(`feishu-progress: message_received: ${e.message}`); }
     });
 
@@ -297,6 +304,30 @@ export default definePluginEntry({
       } catch (e) { log.warn?.(`feishu-progress: after_tool_call: ${e.message}`); }
     });
 
+    /** One-line result title from a small model; undefined on any failure or timeout. */
+    async function modelTitle(run, answer) {
+      if (!opts.titleModel || opts.titleModel === "off" || !api.runtime?.llm?.complete) return undefined;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), opts.titleTimeoutMs);
+      try {
+        const result = await api.runtime.llm.complete({
+          model: opts.titleModel,
+          systemPrompt: TITLE_SYSTEM_PROMPT,
+          messages: [{ role: "user", content: titlePrompt(run.requestText, answer, redactor()) }],
+          maxTokens: 60,
+          temperature: 0.2,
+          purpose: "feishu-progress.answer-title",
+          signal: controller.signal,
+        });
+        return cleanModelTitle(result?.text, redactor());
+      } catch (e) {
+        log.warn?.(`feishu-progress: title model failed (${e?.code ?? e?.name ?? "error"}): ${e?.message ?? e}`);
+        return undefined;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
     function agentName(sessionKey) {
       const id = /^agent:([^:]+):/.exec(sessionKey ?? "")?.[1];
       const identity = id ? api.config?.agents?.entries?.[id]?.identity : undefined;
@@ -325,7 +356,7 @@ export default definePluginEntry({
           text: p.text,
           // Done: the answer's own first sentence says what happened. Stopped or
           // failed: the reply is a generic notice, so name the task instead.
-          title: (outcome === "done" ? answerTitle(p.text, redactor()) : undefined) ?? run.title,
+          title: (outcome === "done" ? (await modelTitle(run, p.text)) ?? answerTitle(p.text, redactor()) : undefined) ?? run.title,
           outcome,
           agentName: agentName(run.sessionKey),
           durationMs: run.durationMs ?? Date.now() - run.startedAt,
