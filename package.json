@@ -8,6 +8,13 @@
     "test": "node --test test/"
   },
   "openclaw": {
-    "extensions": ["./index.js"]
+    "extensions": [
+      "./index.js"
+    ]
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dofy/openclaw-feishu-progress.git"
   }
 }

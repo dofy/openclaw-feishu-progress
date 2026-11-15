@@ -50,3 +50,7 @@ node --test test/
 ```
 
 Live verification was done on 2026-11-15 against OpenClaw 2026.11.3 and the MiMi bot. A normal run collapsed to "处理结束". `/stop` sent mid-run collapsed to "已停止" within about 2 s. A one-word reply produced no card.
+
+## License
+
+MIT
