@@ -4,11 +4,16 @@ import { dirname, join } from "node:path";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import {
   buildStopEnvelope,
+  META_TOOLS,
+  canRenderAnswerCard,
   chatTypeFromSessionKey,
   makeRedactor,
   outcomeOf,
+  parsePlan,
   renderFinalCard,
+  renderAnswerPresentation,
   renderRunningCard,
+  requestTitle,
   stepDetail,
 } from "./lib.js";
 
@@ -18,6 +23,7 @@ const ACTIVE_FILE = join(homedir(), ".openclaw", "feishu-progress", "active.json
 const PENDING_TTL_MS = 10 * 60_000;
 const IDLE_REFRESH_MS = 15_000;
 const LATE_STOP_WINDOW_MS = 10_000;
+const RECENT_RUN_TTL_MS = 120_000;
 
 export default definePluginEntry({
   id: "feishu-progress",
@@ -43,6 +49,10 @@ export default definePluginEntry({
     const activeBySession = new Map();
     /** sessionKey -> last run that ended as "failed", for late /stop relabeling. */
     const recentlyFailed = new Map();
+    /** runId -> finished run, kept briefly because the answer is sent around agent_end. */
+    const recentRuns = new Map();
+    /** sessionKey -> last finished run; the "Agent was aborted" notice after /stop carries no runId of ours. */
+    const lastBySession = new Map();
 
     // ---- Feishu API ------------------------------------------------------
     const feishu = () => api.config?.channels?.feishu ?? {};
@@ -179,6 +189,7 @@ export default definePluginEntry({
         runId,
         sessionKey,
         sourceMessageId: p.messageId,
+        title: p.title,
         chatType,
         startedAt: Date.now(),
         steps: [],
@@ -200,6 +211,12 @@ export default definePluginEntry({
       if (activeBySession.get(run.sessionKey) === run.runId) activeBySession.delete(run.sessionKey);
       const outcome = outcomeOf(event, run.stopRequested);
       const durationMs = Number(event?.durationMs) || Date.now() - run.startedAt;
+      run.outcome = outcome;
+      run.durationMs = durationMs;
+      run.finishedAt = Date.now();
+      lastBySession.set(run.sessionKey, run);
+      recentRuns.set(run.runId, run);
+      setTimeout(() => recentRuns.delete(run.runId), RECENT_RUN_TTL_MS).unref?.();
       enqueue(run, async () => {
         if (run.cardMessageId) await patchCard(run.cardMessageId, renderFinalCard(run, outcome, durationMs));
       }).finally(() => {
@@ -216,6 +233,7 @@ export default definePluginEntry({
       const recent = recentlyFailed.get(sessionKey);
       recentlyFailed.delete(sessionKey);
       if (!recent || Date.now() - recent.at > LATE_STOP_WINDOW_MS || !recent.run.cardMessageId) return;
+      recent.run.outcome = "stopped";
       enqueue(recent.run, () => patchCard(recent.run.cardMessageId, renderFinalCard(recent.run, "stopped", recent.durationMs)));
     }
 
@@ -237,7 +255,7 @@ export default definePluginEntry({
           return;
         }
         if (!messageId || String(messageId).startsWith("card-action-")) return;
-        pending.set(ctx.sessionKey, { messageId, senderId: ctx.senderId ?? event?.senderId, at: Date.now() });
+        pending.set(ctx.sessionKey, { messageId, senderId: ctx.senderId ?? event?.senderId, title: requestTitle(text, redactor()), at: Date.now() });
       } catch (e) { log.warn?.(`feishu-progress: message_received: ${e.message}`); }
     });
 
@@ -252,6 +270,12 @@ export default definePluginEntry({
       try {
         const run = runs.get(ctx?.runId ?? event?.runId);
         if (!run || run.finished) return;
+        if (event?.toolName === "progress_card") {
+          run.plan = parsePlan(event?.params, redactor());
+          markDirty(run);
+          return undefined;
+        }
+        if (META_TOOLS.has(event?.toolName)) return undefined;
         let detail;
         try { detail = stepDetail(event?.toolName, event?.params, redactor(), homedir()); } catch { detail = undefined; }
         run.steps.push({ id: event?.toolCallId, name: event?.toolName, detail, status: "running" });
@@ -270,6 +294,43 @@ export default definePluginEntry({
         step.durationMs = Number(event?.durationMs);
         markDirty(run);
       } catch (e) { log.warn?.(`feishu-progress: after_tool_call: ${e.message}`); }
+    });
+
+    function agentName(sessionKey) {
+      const id = /^agent:([^:]+):/.exec(sessionKey ?? "")?.[1];
+      const identity = id ? api.config?.agents?.entries?.[id]?.identity : undefined;
+      return identity?.name ? `${identity.emoji ? identity.emoji + " " : ""}${identity.name}` : undefined;
+    }
+
+    // Replace the stock "🍯 MiMi" answer header with the task title, so the chat
+    // list shows which task this answer belongs to. Only plain text finals are
+    // taken over; media, tables, long text and existing cards stay stock.
+    api.on("reply_payload_sending", async (event, ctx) => {
+      try {
+        if (event?.kind !== "final") return;
+        const runId = event.runId ?? ctx?.runId;
+        let run = runs.get(runId) ?? recentRuns.get(runId);
+        if (!run) {
+          const last = lastBySession.get(event.sessionKey ?? ctx?.sessionKey);
+          if (last && last.outcome !== "done" && Date.now() - (last.finishedAt ?? 0) < 15_000) run = last;
+        }
+        if (!run || !run.title || run.answerCarded) return;
+        const p = event.payload ?? {};
+        if (p.mediaUrl || (Array.isArray(p.mediaUrls) && p.mediaUrls.length) || p.presentation || p.interactive || p.channelData) return;
+        if (!canRenderAnswerCard(p.text)) return;
+        run.answerCarded = true;
+        const card = renderAnswerPresentation({
+          text: p.text,
+          title: run.title,
+          outcome: run.outcome ?? (run.stopRequested ? "stopped" : "done"),
+          agentName: agentName(run.sessionKey),
+          durationMs: run.durationMs ?? Date.now() - run.startedAt,
+          steps: run.steps,
+        });
+        // Presentation is the only rich path the stock Feishu renderer honours for
+        // replies; text moves into a block so it is not rendered twice.
+        return { payload: { ...p, text: undefined, presentation: card } };
+      } catch (e) { log.warn?.(`feishu-progress: reply_payload_sending: ${e.message}`); }
     });
 
     api.on("agent_end", async (event, ctx) => {

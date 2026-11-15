@@ -6,9 +6,14 @@ import {
   formatDuration,
   makeRedactor,
   outcomeOf,
+  parsePlan,
+  renderPlanMarkdown,
+  canRenderAnswerCard,
+  renderAnswerPresentation,
   renderFinalCard,
   renderRunningCard,
   renderStepsMarkdown,
+  requestTitle,
   stepDetail,
   toolLabel,
 } from "../lib.js";
@@ -136,4 +141,49 @@ test("outcomeOf", () => {
   assert.equal(outcomeOf({ success: false }, true), "stopped");
   assert.equal(outcomeOf({ success: false, error: "AbortError: x" }, false), "stopped");
   assert.equal(outcomeOf({ success: false, error: "boom" }, false), "failed");
+});
+
+test("requestTitle takes the first line, strips a mention, redacts and clips", () => {
+  const r = makeRedactor([]);
+  assert.equal(requestTitle("@MiMi 帮我看下 namo 的测试\n细节…", r), "帮我看下 namo 的测试");
+  assert.equal(requestTitle("\n\n  token=abc123 部署一下", r), "token=[REDACTED] 部署一下");
+  assert.equal(requestTitle("分别对 ~/Works/Seven 下的 namo、yahaha、sync-text 三个 repo 各跑一次", r), "分别对 ~/Works/Seven 下的 namo、yaha…");
+  assert.equal(requestTitle("   ", r), undefined);
+});
+
+test("answer presentation carries the task title and a stats note", () => {
+  const pres = renderAnswerPresentation({ text: "**done**", title: "跑测试", outcome: "done", agentName: "🍯 MiMi", durationMs: 22_000, steps: [{ status: "ok" }] });
+  assert.equal(pres.title, "✅ 跑测试");
+  assert.equal(pres.tone, "success");
+  assert.deepEqual(pres.blocks, [{ type: "text", text: "**done**" }, { type: "divider" }, { type: "context", text: "🍯 MiMi · 用时 22s · 工具调用 1 次" }]);
+  assert.equal(renderAnswerPresentation({ text: "x", title: "t", outcome: "stopped", steps: [] }).title, "⏹ 已停止：t");
+});
+
+test("tables and long text stay with the stock renderer", () => {
+  assert.equal(canRenderAnswerCard("plain **md**"), true);
+  assert.equal(canRenderAnswerCard("| a | b |\n|---|---|\n| 1 | 2 |"), false);
+  assert.equal(canRenderAnswerCard("x".repeat(9000)), false);
+  assert.equal(canRenderAnswerCard(""), false);
+});
+
+test("running card header includes the task title", () => {
+  const card = renderRunningCard({ startedAt: 0, steps: [], title: "跑测试" }, 1000, { maxSteps: 3 });
+  assert.equal(card.header.title.content, "处理中：跑测试");
+});
+
+test("parsePlan reads progress_card steps, bar and note", () => {
+  const r = makeRedactor([]);
+  const plan = parsePlan({
+    plan: [{ step: "Inspect", status: "completed" }, { step: "Repair", status: "in_progress" }, { step: "Verify", status: "pending" }],
+    markdown: '<progress aria-label="PRs reviewed · 12/30" value="12" max="30"></progress>\n\nTwo PRs closed.',
+  }, r);
+  assert.deepEqual(plan, { steps: [{ step: "Inspect", status: "completed" }, { step: "Repair", status: "in_progress" }, { step: "Verify", status: "pending" }], bar: "PRs reviewed · 12/30", note: "Two PRs closed." });
+  assert.equal(parsePlan({}, r), undefined);
+  assert.equal(renderPlanMarkdown(plan), "**📋 计划 1/3** · 📊 PRs reviewed · 12/30\n☑️ Inspect\n▶️ Repair\n▫️ Verify\n<font color='grey'>Two PRs closed.</font>");
+});
+
+test("long plans show a window around the current step", () => {
+  const steps = Array.from({ length: 10 }, (_, i) => ({ step: `s${i}`, status: i < 5 ? "completed" : i === 5 ? "in_progress" : "pending" }));
+  const md = renderPlanMarkdown({ steps }, 4);
+  assert.equal(md, "**📋 计划 5/10**\n<font color='grey'>…已完成 4 步</font>\n☑️ s4\n▶️ s5\n▫️ s6\n▫️ s7\n<font color='grey'>…还有 2 步</font>");
 });

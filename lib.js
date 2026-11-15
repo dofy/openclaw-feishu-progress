@@ -99,6 +99,55 @@ function codeSpan(text) {
   return "`" + text.replace(/`/g, "'").replace(/</g, "＜").replace(/>/g, "＞") + "`";
 }
 
+/** Tool-routing helpers; the inner tool reports its own step, so these add noise. */
+export const META_TOOLS = new Set(["dispatch_action", "tool_search", "tool_describe", "progress_card"]);
+
+/**
+ * The agent's own plan from OpenClaw's built-in progress_card tool
+ * (docs/tools/progress-card.md): ordered steps, an optional <progress> bar
+ * and a note. Each call replaces the whole card. Returns undefined to clear.
+ */
+export function parsePlan(params, redact) {
+  if (!params || typeof params !== "object") return undefined;
+  const steps = Array.isArray(params.plan)
+    ? params.plan
+        .filter((p) => p && typeof p.step === "string" && p.step.trim())
+        .map((p) => ({ step: clip(redact(p.step), 48), status: ["completed", "in_progress"].includes(p.status) ? p.status : "pending" }))
+    : [];
+  const md = typeof params.markdown === "string" ? params.markdown : "";
+  const barMatch = /<progress[^>]*aria-label="([^"]+)"/i.exec(md) ?? /<progress[^>]*value="(\d+)"[^>]*max="(\d+)"/i.exec(md);
+  const bar = barMatch ? (barMatch[2] ? `${barMatch[1]}/${barMatch[2]}` : barMatch[1]) : undefined;
+  const noteLine = md
+    .replace(/<progress[^>]*>(?:<\/progress>)?/gi, "")
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l && !l.startsWith("|"));
+  const note = noteLine ? clip(redact(noteLine), 60) : undefined;
+  if (!steps.length && !bar && !note) return undefined;
+  return { steps, bar: bar ? clip(redact(bar), 40) : undefined, note };
+}
+
+const PLAN_ICON = { completed: "☑️", in_progress: "▶️", pending: "▫️" };
+
+/** Plan block: done/total, then a window of at most maxSteps around the current step. */
+export function renderPlanMarkdown(plan, maxSteps = 6) {
+  const lines = [];
+  const done = plan.steps.filter((s) => s.status === "completed").length;
+  const head = [plan.steps.length ? `**📋 计划 ${done}/${plan.steps.length}**` : undefined, plan.bar ? `📊 ${plan.bar}` : undefined].filter(Boolean);
+  if (head.length) lines.push(head.join(" · "));
+  if (plan.steps.length) {
+    const cur = Math.max(0, plan.steps.findIndex((s) => s.status !== "completed"));
+    const start = Math.max(0, Math.min(cur - 1, plan.steps.length - maxSteps));
+    const shown = plan.steps.slice(start, start + maxSteps);
+    if (start > 0) lines.push(`<font color='grey'>…已完成 ${start} 步</font>`);
+    for (const s of shown) lines.push(`${PLAN_ICON[s.status]} ${s.step}`);
+    const rest = plan.steps.length - start - shown.length;
+    if (rest > 0) lines.push(`<font color='grey'>…还有 ${rest} 步</font>`);
+  }
+  if (plan.note) lines.push(`<font color='grey'>${plan.note}</font>`);
+  return lines.join("\n");
+}
+
 export function toolLabel(name) {
   if (typeof name !== "string" || !name) return "工具";
   return TOOL_LABELS[name] ?? name;
@@ -183,9 +232,9 @@ export function renderRunningCard(run, now, opts) {
   const { total, failed } = countSteps(run.steps);
   const parts = [`已用时 ${formatDuration(now - run.startedAt)}`, `工具调用 ${total} 次`];
   if (failed) parts.push(`失败 ${failed} 次`);
-  const elements = [
-    { tag: "markdown", content: renderStepsMarkdown(run.steps, opts.maxSteps) },
-  ];
+  const elements = [];
+  if (run.plan) elements.push({ tag: "markdown", content: renderPlanMarkdown(run.plan) }, { tag: "hr" });
+  elements.push({ tag: "markdown", content: renderStepsMarkdown(run.steps, opts.maxSteps) });
   if (run.stopEnvelope) {
     elements.push({
       tag: "button",
@@ -203,7 +252,7 @@ export function renderRunningCard(run, now, opts) {
     schema: "2.0",
     config: { update_multi: true, width_mode: "default" },
     header: {
-      title: { tag: "plain_text", content: run.stopRequested ? "正在停止" : "处理中" },
+      title: { tag: "plain_text", content: `${run.stopRequested ? "正在停止" : "处理中"}${run.title ? `：${run.title}` : ""}` },
       subtitle: { tag: "plain_text", content: parts.join(" · ") },
       template: run.stopRequested ? "orange" : "blue",
     },
@@ -229,6 +278,48 @@ export function renderFinalCard(run, outcome, durationMs) {
     body: {
       elements: [{ tag: "markdown", content: `<font color='grey'>${parts.join(" · ")}</font>`, text_size: "notation" }],
     },
+  };
+}
+
+const TITLE_MAX = 30;
+const TITLE_PREFIX = { done: "✅ ", stopped: "⏹ 已停止：", failed: "❌ 失败：" };
+
+/**
+ * One-line task title from the user's request: first non-empty line, minus a
+ * leading "@bot" mention, redacted and clipped. Shown as the answer card's
+ * header, which is also what the Feishu chat list previews.
+ */
+export function requestTitle(text, redact) {
+  if (typeof text !== "string") return undefined;
+  const line = text.split("\n").map((l) => l.trim()).find(Boolean);
+  if (!line) return undefined;
+  const cleaned = line.replace(/^@\S+\s+/, "");
+  return clip(redact(cleaned), TITLE_MAX) || undefined;
+}
+
+/** Card markdown tables need the stock plugin's table handling; long text needs its chunking. */
+export function canRenderAnswerCard(text) {
+  if (typeof text !== "string" || !text.trim() || text.length > 8000) return false;
+  if (/^\s*\|.*\|\s*$/m.test(text) && /^\s*\|?\s*:?-{3,}/m.test(text)) return false;
+  return true;
+}
+
+const TITLE_TONE = { done: "success", stopped: "neutral", failed: "danger" };
+
+/**
+ * The answer as an OpenClaw message presentation whose title names the task.
+ * The stock Feishu plugin renders it as a card with that header, which is
+ * also what the chat list previews.
+ */
+export function renderAnswerPresentation({ text, title, outcome, agentName, durationMs, steps }) {
+  const { total, failed } = countSteps(steps ?? []);
+  const note = [agentName, durationMs ? `用时 ${formatDuration(durationMs)}` : undefined, `工具调用 ${total} 次`, failed ? `失败 ${failed} 次` : undefined]
+    .filter(Boolean)
+    .join(" · ");
+  return {
+    title: `${TITLE_PREFIX[outcome] ?? TITLE_PREFIX.done}${title}`,
+    tone: TITLE_TONE[outcome] ?? "success",
+    blocks: [{ type: "text", text }, { type: "divider" }, { type: "context", text: note }],
   };
 }
 
