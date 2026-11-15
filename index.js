@@ -352,7 +352,9 @@ export default definePluginEntry({
         if (p.mediaUrl || (Array.isArray(p.mediaUrls) && p.mediaUrls.length) || p.presentation || p.interactive || p.channelData) return;
         if (!canRenderAnswerCard(p.text)) return;
         run.answerCarded = true;
-        const outcome = run.outcome ?? (run.stopRequested ? "stopped" : "done");
+        // A final answer that arrives before agent_end belongs to a run that is
+        // finishing normally; a /stop that was ignored must not relabel it.
+        const outcome = run.outcome ?? "done";
         const card = renderAnswerPresentation({
           text: p.text,
           // Done: the answer's own first sentence says what happened. Stopped or
