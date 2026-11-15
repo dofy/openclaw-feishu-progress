@@ -1,7 +1,10 @@
 // Pure helpers: card rendering and the stop-button envelope. No I/O here, so
 // everything in this file is covered by test/lib.test.js.
 
-/** Human labels for common tools. Parameters are never shown: they can hold paths or secrets. */
+/**
+ * Human labels for common tools. Raw parameters are never shown; only the
+ * redacted, clipped summary from stepDetail() is.
+ */
 const TOOL_LABELS = {
   exec: "运行命令",
   process: "管理进程",
@@ -21,6 +24,80 @@ const TOOL_LABELS = {
   tool_describe: "查看工具说明",
   dispatch_action: "调用工具",
 };
+
+/**
+ * Redacts known secret values plus common token shapes. Patterns follow
+ * Namo's makeRedactor (src/safety.ts), extended with key=value assignments
+ * and long opaque strings.
+ */
+export function makeRedactor(values = []) {
+  const secrets = values.filter((v) => typeof v === "string" && v.length >= 8).sort((a, b) => b.length - a.length);
+  return (text) => {
+    let out = String(text);
+    for (const v of secrets) out = out.split(v).join("[REDACTED]");
+    return out
+      .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b/g, "[REDACTED]")
+      .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{12,}/gi, "$1[REDACTED]")
+      .replace(/\b([A-Za-z0-9_]*(?:token|secret|passw(?:or)?d|api[_-]?key|auth)[A-Za-z0-9_]*\s*[=:]\s*)(["']?)[^\s"']+\2/gi, "$1[REDACTED]")
+      // Long opaque runs (keys, JWT parts). "/" is excluded so long paths survive.
+      .replace(/[A-Za-z0-9+_-]{32,}={0,2}/g, "[REDACTED]");
+  };
+}
+
+const DETAIL_MAX = 40;
+
+function clip(text, max = DETAIL_MAX) {
+  const chars = Array.from(text.replace(/\s+/g, " ").trim());
+  return chars.length > max ? `${chars.slice(0, max).join("")}…` : chars.join("");
+}
+
+/**
+ * A short, redacted description of what a tool call does: the command for
+ * exec, the host for web_fetch, the file name for file tools. Returns
+ * undefined when there is nothing safe to show.
+ */
+export function stepDetail(name, params, redact, home) {
+  if (!params || typeof params !== "object") return undefined;
+  const tidy = (s) => {
+    let t = String(s);
+    if (home) t = t.split(home).join("~");
+    return clip(redact(t));
+  };
+  const str = (v) => (typeof v === "string" && v.trim() ? v : undefined);
+  switch (name) {
+    case "exec": {
+      let cmd = str(params.command) ?? str(params.cmd) ?? (Array.isArray(params.command) ? params.command.join(" ") : undefined);
+      if (!cmd) return undefined;
+      // "cd /long/path/repo && git log" spends the whole budget on the path;
+      // show it as "repo: git log" instead.
+      const m = cmd.match(/^\s*cd\s+(["']?)([^"'&;]+?)\1\s*(?:&&|;)\s*(.+)$/s);
+      if (m) cmd = `${m[2].replace(/\/+$/, "").split("/").pop()}: ${m[3]}`;
+      return tidy(cmd);
+    }
+    case "web_fetch": {
+      const url = str(params.url);
+      if (!url) return undefined;
+      try { return new URL(url).host; } catch { return undefined; }
+    }
+    case "web_search": {
+      const q = str(params.query) ?? str(params.q);
+      return q ? tidy(q) : undefined;
+    }
+    case "read":
+    case "write":
+    case "edit": {
+      const p = str(params.path) ?? str(params.file_path) ?? str(params.filePath);
+      return p ? tidy(p.split("/").filter(Boolean).slice(-2).join("/")) : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** Inline code for card markdown; backticks and angle brackets could break the card. */
+function codeSpan(text) {
+  return "`" + text.replace(/`/g, "'").replace(/</g, "＜").replace(/>/g, "＞") + "`";
+}
 
 export function toolLabel(name) {
   if (typeof name !== "string" || !name) return "工具";
@@ -73,18 +150,18 @@ export function groupSteps(steps) {
   const groups = [];
   for (const s of steps) {
     const last = groups.at(-1);
-    if (last && s.status !== "running" && last.status === s.status && last.name === s.name) {
+    if (last && s.status !== "running" && last.status === s.status && last.name === s.name && last.detail === s.detail) {
       last.count++;
       if (Number.isFinite(s.durationMs)) last.durationMs = (last.durationMs ?? 0) + s.durationMs;
     } else {
-      groups.push({ name: s.name, status: s.status, count: 1, durationMs: Number.isFinite(s.durationMs) ? s.durationMs : undefined });
+      groups.push({ name: s.name, detail: s.detail, status: s.status, count: 1, durationMs: Number.isFinite(s.durationMs) ? s.durationMs : undefined });
     }
   }
   return groups;
 }
 
 function groupLine(g) {
-  const label = toolLabel(g.name) + (g.count > 1 ? ` × ${g.count}` : "");
+  const label = toolLabel(g.name) + (g.detail ? ` ${codeSpan(g.detail)}` : "") + (g.count > 1 ? ` × ${g.count}` : "");
   if (g.status === "running") return `⏳ ${label}`;
   const dur = Number.isFinite(g.durationMs) ? ` · ${formatDuration(g.durationMs)}` : "";
   if (g.status === "failed") return `❌ ${label} · 失败${dur}`;

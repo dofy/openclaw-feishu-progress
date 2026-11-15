@@ -7,7 +7,7 @@ An OpenClaw plugin that gives Feishu turns a Namo-style progress card:
 - **When the turn ends**: the card collapses to one grey line, for example `处理结束 · 用时 22s · 工具调用 3 次`. Other outcomes read `已停止`, `执行失败` or `已中断（服务重启）`. The answer itself arrives as a separate message.
 - **Quick replies get no card**: a card appears only on the first tool call or after 10 s.
 
-Tool parameters are never shown, because they can contain paths or secrets. Only tool names are shown, mapped to Chinese labels in `lib.js`.
+Each step shows a Chinese tool label plus a short, redacted detail. For `exec` that is the command, shown as `namo: git log -3 --oneline` when it starts with `cd <dir> &&`. For `web_fetch` it is the host, for `web_search` the query, and for file tools the last two path segments. Details are clipped to 40 characters and `$HOME` becomes `~`. Redaction covers the Feishu app secret, every secret-named env var of the gateway, `sk-`/`ghp_`/`xox*-`/`AKIA` tokens, `Bearer …`, `*token*=`/`*key*=`-style assignments and opaque runs of 32 or more characters. Raw parameters are never shown. Consecutive identical steps merge as `× N`.
 
 ## How it works
 

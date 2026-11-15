@@ -4,10 +4,12 @@ import {
   buildStopEnvelope,
   chatTypeFromSessionKey,
   formatDuration,
+  makeRedactor,
   outcomeOf,
   renderFinalCard,
   renderRunningCard,
   renderStepsMarkdown,
+  stepDetail,
   toolLabel,
 } from "../lib.js";
 
@@ -97,6 +99,36 @@ test("final card collapses to one grey line without buttons", () => {
   assert.equal(card.header, undefined);
   assert.equal(card.body.elements.length, 1);
   assert.equal(card.body.elements[0].content, "<font color='grey'>已停止 · 用时 28s · 工具调用 2 次 · 失败 1 次</font>");
+});
+
+test("redactor removes known values and token shapes", () => {
+  const r = makeRedactor(["s3cr3t-value-123"]);
+  assert.equal(r("curl -H 'Authorization: Bearer abcdefghijklmnop' x"), "curl -H 'Authorization: [REDACTED] [REDACTED]' x"); // header assignment rule wins; over-redaction is fine
+  assert.equal(r("echo s3cr3t-value-123"), "echo [REDACTED]");
+  assert.equal(r("gh auth ghp_abcdefghijklmnopqrstuvwxyz12"), "gh auth [REDACTED]");
+  assert.equal(r("API_KEY=foo123 node x.js"), "API_KEY=[REDACTED] node x.js");
+  assert.equal(r("export OPENAI_API_KEY='sk-zzz'"), "export OPENAI_API_KEY=[REDACTED]");
+  assert.equal(r("cd /Users/seven/Works/Seven/openclaw-feishu-progress"), "cd /Users/seven/Works/Seven/openclaw-feishu-progress");
+});
+
+test("stepDetail summarizes common tools and clips", () => {
+  const r = makeRedactor([]);
+  assert.equal(stepDetail("exec", { command: "cd /Users/seven/Works/Seven/namo && git log -3 --oneline" }, r, "/Users/seven"), "namo: git log -3 --oneline");
+  assert.equal(stepDetail("exec", { command: "cd '/tmp/a b/' ; ls -la" }, r), "a b: ls -la");
+  assert.equal(stepDetail("exec", { command: "git status" }, r), "git status");
+  assert.equal(stepDetail("web_fetch", { url: "https://docs.openclaw.ai/tools/x?token=1" }, r), "docs.openclaw.ai");
+  assert.equal(stepDetail("read", { path: "/Users/seven/.openclaw/openclaw.json" }, r), ".openclaw/openclaw.json");
+  assert.equal(stepDetail("unknown_tool", { a: 1 }, r), undefined);
+  assert.equal(stepDetail("exec", undefined, r), undefined);
+});
+
+test("detail appears as inline code and splits groups", () => {
+  const steps = [
+    { name: "exec", detail: "git log a", status: "ok", durationMs: 200 },
+    { name: "exec", detail: "git log a", status: "ok", durationMs: 200 },
+    { name: "exec", detail: "git log `b` <x>", status: "ok", durationMs: 200 },
+  ];
+  assert.equal(renderStepsMarkdown(steps, 8), "✅ 运行命令 `git log a` × 2 · 0.4s\n✅ 运行命令 `git log 'b' ＜x＞` · 0.2s");
 });
 
 test("outcomeOf", () => {

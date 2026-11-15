@@ -5,9 +5,11 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import {
   buildStopEnvelope,
   chatTypeFromSessionKey,
+  makeRedactor,
   outcomeOf,
   renderFinalCard,
   renderRunningCard,
+  stepDetail,
 } from "./lib.js";
 
 // Cards still showing "处理中" when the gateway stopped. Read on load and
@@ -46,6 +48,17 @@ export default definePluginEntry({
     const feishu = () => api.config?.channels?.feishu ?? {};
     const baseUrl = () => (feishu().domain === "lark" ? "https://open.larksuite.com" : "https://open.feishu.cn");
     let token = { value: "", expiresAt: 0 };
+
+    // Values that must never reach a card: the app secret and every
+    // secret-looking environment variable of the gateway process.
+    let redactorCache;
+    function redactor() {
+      if (redactorCache) return redactorCache;
+      const values = [appSecret()];
+      for (const [k, v] of Object.entries(process.env)) if (/KEY|TOKEN|SECRET|PASSW|AUTH|COOKIE/i.test(k)) values.push(v);
+      redactorCache = makeRedactor(values);
+      return redactorCache;
+    }
 
     function appSecret() {
       const s = feishu().appSecret;
@@ -239,7 +252,9 @@ export default definePluginEntry({
       try {
         const run = runs.get(ctx?.runId ?? event?.runId);
         if (!run || run.finished) return;
-        run.steps.push({ id: event?.toolCallId, name: event?.toolName, status: "running" });
+        let detail;
+        try { detail = stepDetail(event?.toolName, event?.params, redactor(), homedir()); } catch { detail = undefined; }
+        run.steps.push({ id: event?.toolCallId, name: event?.toolName, detail, status: "running" });
         markDirty(run);
       } catch (e) { log.warn?.(`feishu-progress: before_tool_call: ${e.message}`); }
       return undefined; // observe only, never block
