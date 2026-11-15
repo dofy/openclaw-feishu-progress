@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  answerTitle,
   buildStopEnvelope,
   chatTypeFromSessionKey,
   formatDuration,
@@ -86,7 +87,7 @@ test("running card has header summary and a confirmed stop button", () => {
   const card = renderRunningCard(run, 12_000, opts);
   assert.equal(card.schema, "2.0");
   assert.equal(card.config.update_multi, true);
-  assert.equal(card.header.subtitle.content, "已用时 12s · 工具调用 1 次 · 失败 1 次");
+  assert.equal(card.header.subtitle.content, "⏱️ 已用时 12s · 🔧 工具调用 1 次 · ❌ 失败 1 次");
   const button = card.body.elements.find((e) => e.tag === "button");
   assert.deepEqual(button.behaviors, [{ type: "callback", value: { oc: "ocf1" } }]);
   assert.ok(button.confirm);
@@ -95,7 +96,7 @@ test("running card has header summary and a confirmed stop button", () => {
 
 test("stop requested disables the button and changes the header", () => {
   const card = renderRunningCard({ startedAt: 0, steps: [], stopEnvelope: {}, stopRequested: true }, 1000, opts);
-  assert.equal(card.header.title.content, "正在停止");
+  assert.equal(card.header.title.content, "🛑 正在停止");
   assert.equal(card.body.elements.find((e) => e.tag === "button").disabled, true);
 });
 
@@ -103,7 +104,7 @@ test("final card collapses to one grey line without buttons", () => {
   const card = renderFinalCard({ steps: [{ status: "ok" }, { status: "failed" }] }, "stopped", 28_000);
   assert.equal(card.header, undefined);
   assert.equal(card.body.elements.length, 1);
-  assert.equal(card.body.elements[0].content, "<font color='grey'>已停止 · 用时 28s · 工具调用 2 次 · 失败 1 次</font>");
+  assert.equal(card.body.elements[0].content, "<font color='grey'>⏹️ 已停止 · ⏱️ 28s · 🔧 2 次 · ❌ 失败 1 次</font>");
 });
 
 test("redactor removes known values and token shapes", () => {
@@ -155,8 +156,8 @@ test("answer presentation carries the task title and a stats note", () => {
   const pres = renderAnswerPresentation({ text: "**done**", title: "跑测试", outcome: "done", agentName: "🍯 MiMi", durationMs: 22_000, steps: [{ status: "ok" }] });
   assert.equal(pres.title, "✅ 跑测试");
   assert.equal(pres.tone, "success");
-  assert.deepEqual(pres.blocks, [{ type: "text", text: "**done**" }, { type: "divider" }, { type: "context", text: "🍯 MiMi · 用时 22s · 工具调用 1 次" }]);
-  assert.equal(renderAnswerPresentation({ text: "x", title: "t", outcome: "stopped", steps: [] }).title, "⏹ 已停止：t");
+  assert.deepEqual(pres.blocks, [{ type: "text", text: "**done**" }, { type: "divider" }, { type: "context", text: "🍯 MiMi · ⏱️ 22s · 🔧 工具调用 1 次" }]);
+  assert.equal(renderAnswerPresentation({ text: "x", title: "t", outcome: "stopped", steps: [] }).title, "⏹️ 已停止：t");
 });
 
 test("tables and long text stay with the stock renderer", () => {
@@ -168,7 +169,7 @@ test("tables and long text stay with the stock renderer", () => {
 
 test("running card header includes the task title", () => {
   const card = renderRunningCard({ startedAt: 0, steps: [], title: "跑测试" }, 1000, { maxSteps: 3 });
-  assert.equal(card.header.title.content, "处理中：跑测试");
+  assert.equal(card.header.title.content, "⏳ 处理中：跑测试");
 });
 
 test("parsePlan reads progress_card steps, bar and note", () => {
@@ -186,4 +187,15 @@ test("long plans show a window around the current step", () => {
   const steps = Array.from({ length: 10 }, (_, i) => ({ step: `s${i}`, status: i < 5 ? "completed" : i === 5 ? "in_progress" : "pending" }));
   const md = renderPlanMarkdown({ steps }, 4);
   assert.equal(md, "**📋 计划 5/10**\n<font color='grey'>…已完成 4 步</font>\n☑️ s4\n▶️ s5\n▫️ s6\n▫️ s7\n<font color='grey'>…还有 2 步</font>");
+});
+
+test("answerTitle takes the answer's first sentence as plain text", () => {
+  const r = makeRedactor([]);
+  assert.equal(answerTitle("两个都在 main 分支：namo 停在今天的 `0d5ab39`，yahaha 停在 9-30。", r), "两个都在 main 分支");
+  assert.equal(answerTitle("**余额 $12.40**，本月已用 $7.60。", r), "余额 $12.40，本月已用 $7.60");
+  assert.equal(answerTitle("```\nraw\n```\n## 结果\n- yahaha 在 **main** 分支", r), "结果");
+  assert.equal(answerTitle("| a | b |\n|---|---|\nnamo 当前在 `main` 分支。", r), "namo 当前在 main 分支");
+  assert.equal(answerTitle("Done. All 3 repos checked.", r), "Done. All 3 repos checked");
+  assert.equal(answerTitle("```\nonly code\n```", r), undefined);
+  assert.equal(answerTitle("三个 repo 跑完了:\n\n**namo**", r), "三个 repo 跑完了");
 });

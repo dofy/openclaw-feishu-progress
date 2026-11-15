@@ -230,8 +230,8 @@ export function renderStepsMarkdown(steps, maxSteps) {
 /** Live card: header with elapsed time, recent steps, stop button. */
 export function renderRunningCard(run, now, opts) {
   const { total, failed } = countSteps(run.steps);
-  const parts = [`已用时 ${formatDuration(now - run.startedAt)}`, `工具调用 ${total} 次`];
-  if (failed) parts.push(`失败 ${failed} 次`);
+  const parts = [`⏱️ 已用时 ${formatDuration(now - run.startedAt)}`, `🔧 工具调用 ${total} 次`];
+  if (failed) parts.push(`❌ 失败 ${failed} 次`);
   const elements = [];
   if (run.plan) elements.push({ tag: "markdown", content: renderPlanMarkdown(run.plan) }, { tag: "hr" });
   elements.push({ tag: "markdown", content: renderStepsMarkdown(run.steps, opts.maxSteps) });
@@ -252,7 +252,7 @@ export function renderRunningCard(run, now, opts) {
     schema: "2.0",
     config: { update_multi: true, width_mode: "default" },
     header: {
-      title: { tag: "plain_text", content: `${run.stopRequested ? "正在停止" : "处理中"}${run.title ? `：${run.title}` : ""}` },
+      title: { tag: "plain_text", content: `${run.stopRequested ? "🛑 正在停止" : "⏳ 处理中"}${run.title ? `：${run.title}` : ""}` },
       subtitle: { tag: "plain_text", content: parts.join(" · ") },
       template: run.stopRequested ? "orange" : "blue",
     },
@@ -261,17 +261,17 @@ export function renderRunningCard(run, now, opts) {
 }
 
 const OUTCOME_LABEL = {
-  done: "处理结束",
-  stopped: "已停止",
-  failed: "执行失败",
-  interrupted: "已中断（服务重启）",
+  done: "✅ 处理结束",
+  stopped: "⏹️ 已停止",
+  failed: "❌ 执行失败",
+  interrupted: "⚠️ 已中断（服务重启）",
 };
 
 /** Collapsed card after the turn: one grey line, like Namo's retired progress surface. */
 export function renderFinalCard(run, outcome, durationMs) {
   const { total, failed } = countSteps(run.steps);
-  const parts = [OUTCOME_LABEL[outcome] ?? OUTCOME_LABEL.done, `用时 ${formatDuration(durationMs)}`, `工具调用 ${total} 次`];
-  if (failed) parts.push(`失败 ${failed} 次`);
+  const parts = [OUTCOME_LABEL[outcome] ?? OUTCOME_LABEL.done, `⏱️ ${formatDuration(durationMs)}`, `🔧 ${total} 次`];
+  if (failed) parts.push(`❌ 失败 ${failed} 次`);
   return {
     schema: "2.0",
     config: { update_multi: true, width_mode: "default" },
@@ -282,7 +282,7 @@ export function renderFinalCard(run, outcome, durationMs) {
 }
 
 const TITLE_MAX = 30;
-const TITLE_PREFIX = { done: "✅ ", stopped: "⏹ 已停止：", failed: "❌ 失败：" };
+const TITLE_PREFIX = { done: "✅ ", stopped: "⏹️ 已停止：", failed: "❌ 失败：" };
 
 /**
  * One-line task title from the user's request: first non-empty line, minus a
@@ -295,6 +295,41 @@ export function requestTitle(text, redact) {
   if (!line) return undefined;
   const cleaned = line.replace(/^@\S+\s+/, "");
   return clip(redact(cleaned), TITLE_MAX) || undefined;
+}
+
+/**
+ * The answer's own first sentence, as plain text: the shortest statement of
+ * what the run concluded. Markdown, code fences, tables and list markers are
+ * stripped. The sentence ends at the first 。！？；： after 4 characters,
+ * or at .!?;: followed by a space after 8 characters. Returns undefined when nothing usable is left, so the
+ * caller can fall back to the request title.
+ */
+export function answerTitle(text, redact) {
+  if (typeof text !== "string") return undefined;
+  let inFence = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line.startsWith("```")) { inFence = !inFence; continue; }
+    if (inFence || !line || line.startsWith("|") || /^[-*_]{3,}$/.test(line) || line.startsWith(">")) continue;
+    const plain = line
+      .replace(/^#{1,6}\s+/, "")
+      .replace(/^(?:[-*+]|\d+[.)])\s+/, "")
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/(\*\*|__|\*|_|~~|`)/g, "")
+      .replace(/<[^>]+>/g, "")
+      .trim();
+    if (!plain) continue;
+    // Earliest of: a CJK terminator anywhere, or an ASCII one followed by a
+    // space or the end ("$12.40" and "v2.1" keep their dots).
+    // ASCII needs 8 leading characters so "Done." does not become the title.
+    const cjk = /[。！？；：]/u.exec(plain.slice(4));
+    const ascii = /[.!?;:](?=\s|$)/.exec(plain.slice(8));
+    const cuts = [cjk && cjk.index + 4, ascii && ascii.index + 8].filter((x) => x != null);
+    const sentence = (cuts.length ? plain.slice(0, Math.min(...cuts)) : plain).trim();
+    if (Array.from(sentence).length < 2) continue;
+    return clip(redact(sentence), TITLE_MAX);
+  }
+  return undefined;
 }
 
 /** Card markdown tables need the stock plugin's table handling; long text needs its chunking. */
@@ -313,7 +348,7 @@ const TITLE_TONE = { done: "success", stopped: "neutral", failed: "danger" };
  */
 export function renderAnswerPresentation({ text, title, outcome, agentName, durationMs, steps }) {
   const { total, failed } = countSteps(steps ?? []);
-  const note = [agentName, durationMs ? `用时 ${formatDuration(durationMs)}` : undefined, `工具调用 ${total} 次`, failed ? `失败 ${failed} 次` : undefined]
+  const note = [agentName, durationMs ? `⏱️ ${formatDuration(durationMs)}` : undefined, `🔧 工具调用 ${total} 次`, failed ? `❌ 失败 ${failed} 次` : undefined]
     .filter(Boolean)
     .join(" · ");
   return {

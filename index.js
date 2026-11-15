@@ -5,6 +5,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import {
   buildStopEnvelope,
   META_TOOLS,
+  answerTitle,
   canRenderAnswerCard,
   chatTypeFromSessionKey,
   makeRedactor,
@@ -319,10 +320,13 @@ export default definePluginEntry({
         if (p.mediaUrl || (Array.isArray(p.mediaUrls) && p.mediaUrls.length) || p.presentation || p.interactive || p.channelData) return;
         if (!canRenderAnswerCard(p.text)) return;
         run.answerCarded = true;
+        const outcome = run.outcome ?? (run.stopRequested ? "stopped" : "done");
         const card = renderAnswerPresentation({
           text: p.text,
-          title: run.title,
-          outcome: run.outcome ?? (run.stopRequested ? "stopped" : "done"),
+          // Done: the answer's own first sentence says what happened. Stopped or
+          // failed: the reply is a generic notice, so name the task instead.
+          title: (outcome === "done" ? answerTitle(p.text, redactor()) : undefined) ?? run.title,
+          outcome,
           agentName: agentName(run.sessionKey),
           durationMs: run.durationMs ?? Date.now() - run.startedAt,
           steps: run.steps,
