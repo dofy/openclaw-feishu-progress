@@ -1,0 +1,17 @@
+{
+  "id": "feishu-progress",
+  "name": "Feishu Progress Card",
+  "description": "Shows one updatable progress card per Feishu turn (tool steps, elapsed time) with a stop button, then collapses it to a one-line summary.",
+  "categories": ["other"],
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "updateIntervalMs": { "type": "integer", "minimum": 2000, "description": "Minimum gap between card updates. Default 5000." },
+      "showAfterMs": { "type": "integer", "minimum": 0, "description": "Show the card after this long even without a tool call. Default 10000." },
+      "maxSteps": { "type": "integer", "minimum": 1, "maximum": 30, "description": "How many recent tool steps the card lists. Default 8." },
+      "stopButtonTtlMs": { "type": "integer", "minimum": 60000, "description": "How long the stop button stays valid. Default 6 hours." }
+    }
+  }
+}
