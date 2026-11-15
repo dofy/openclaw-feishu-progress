@@ -64,20 +64,40 @@ export function countSteps(steps) {
   return { total: steps.length, failed };
 }
 
-function stepLine(step) {
-  const label = toolLabel(step.name);
-  if (step.status === "running") return `⏳ ${label}`;
-  const dur = Number.isFinite(step.durationMs) ? ` · ${formatDuration(step.durationMs)}` : "";
-  if (step.status === "failed") return `❌ ${label} · 失败${dur}`;
+/**
+ * Consecutive finished steps with the same tool and status collapse into one
+ * line ("✅ 运行命令 × 3 · 0.7s"), as Namo groups repeated progress lines.
+ * Running steps are never merged, so the line being worked on stays visible.
+ */
+export function groupSteps(steps) {
+  const groups = [];
+  for (const s of steps) {
+    const last = groups.at(-1);
+    if (last && s.status !== "running" && last.status === s.status && last.name === s.name) {
+      last.count++;
+      if (Number.isFinite(s.durationMs)) last.durationMs = (last.durationMs ?? 0) + s.durationMs;
+    } else {
+      groups.push({ name: s.name, status: s.status, count: 1, durationMs: Number.isFinite(s.durationMs) ? s.durationMs : undefined });
+    }
+  }
+  return groups;
+}
+
+function groupLine(g) {
+  const label = toolLabel(g.name) + (g.count > 1 ? ` × ${g.count}` : "");
+  if (g.status === "running") return `⏳ ${label}`;
+  const dur = Number.isFinite(g.durationMs) ? ` · ${formatDuration(g.durationMs)}` : "";
+  if (g.status === "failed") return `❌ ${label} · 失败${dur}`;
   return `✅ ${label}${dur}`;
 }
 
 export function renderStepsMarkdown(steps, maxSteps) {
   if (steps.length === 0) return "<font color='grey'>正在思考…</font>";
-  const shown = steps.slice(-maxSteps);
-  const hidden = steps.length - shown.length;
-  const lines = shown.map(stepLine);
-  if (hidden > 0) lines.unshift(`<font color='grey'>…前面还有 ${hidden} 步</font>`);
+  const groups = groupSteps(steps);
+  const shown = groups.slice(-maxSteps);
+  const hiddenSteps = groups.slice(0, groups.length - shown.length).reduce((n, g) => n + g.count, 0);
+  const lines = shown.map(groupLine);
+  if (hiddenSteps > 0) lines.unshift(`<font color='grey'>…前面还有 ${hiddenSteps} 步</font>`);
   return lines.join("\n");
 }
 

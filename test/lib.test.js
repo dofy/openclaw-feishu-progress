@@ -39,7 +39,7 @@ test("tool labels never include parameters", () => {
   assert.equal(toolLabel(undefined), "工具");
 });
 
-test("steps markdown keeps only the most recent steps", () => {
+test("steps markdown keeps only the most recent groups", () => {
   const steps = [
     { name: "exec", status: "ok", durationMs: 300 },
     { name: "exec", status: "ok", durationMs: 300 },
@@ -48,10 +48,30 @@ test("steps markdown keeps only the most recent steps", () => {
     { name: "exec", status: "running" },
   ];
   const md = renderStepsMarkdown(steps, 3);
-  assert.match(md, /前面还有 2 步/);
+  assert.match(md, /前面还有 2 步/); // the merged "exec × 2" group is hidden
   assert.match(md, /❌ 抓取网页 · 失败 · 1\.2s/);
   assert.match(md, /⏳ 运行命令$/);
   assert.equal(renderStepsMarkdown([], 3), "<font color='grey'>正在思考…</font>");
+});
+
+test("consecutive identical finished steps merge into one line", () => {
+  const steps = [
+    { name: "exec", status: "ok", durationMs: 200 },
+    { name: "exec", status: "ok", durationMs: 200 },
+    { name: "exec", status: "ok", durationMs: 300 },
+  ];
+  assert.equal(renderStepsMarkdown(steps, 8), "✅ 运行命令 × 3 · 0.7s");
+});
+
+test("running and failed steps do not merge with finished ones", () => {
+  const steps = [
+    { name: "exec", status: "ok", durationMs: 200 },
+    { name: "exec", status: "failed", durationMs: 100 },
+    { name: "exec", status: "ok", durationMs: 200 },
+    { name: "exec", status: "running" },
+    { name: "exec", status: "running" },
+  ];
+  assert.equal(renderStepsMarkdown(steps, 8), ["✅ 运行命令 · 0.2s", "❌ 运行命令 · 失败 · 0.1s", "✅ 运行命令 · 0.2s", "⏳ 运行命令", "⏳ 运行命令"].join("\n"));
 });
 
 test("running card has header summary and a confirmed stop button", () => {
